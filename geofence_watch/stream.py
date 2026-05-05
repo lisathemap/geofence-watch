@@ -1,73 +1,97 @@
-"""Stream processor that tracks state and emits geofence events."""
+"""Stateful stream processor that emits GeofenceEvents and records history."""
 
-from typing import Callable, Dict, Iterator, List, Optional
+from __future__ import annotations
+
+from typing import Dict, Iterator, List, Optional
 
 from .checker import GeofenceChecker
 from .event import EventType, GeofenceEvent
+from .history import HistoryStore
 from .point import Point
 
 
-EventCallback = Callable[[GeofenceEvent], None]
-
-
 class GeofenceStream:
-    """Processes a stream of points and emits boundary-crossing events.
+    """Process a stream of (object_id, Point) observations.
 
-    Tracks per-fence inside/outside state so that ENTER and EXIT events
-    are only emitted on actual transitions.
+    Maintains the last-known inside/outside state per (object_id, fence)
+    pair and emits :class:`~geofence_watch.event.GeofenceEvent` objects
+    only when the state changes (enter / exit transitions).
+
+    Parameters
+    ----------
+    checker:
+        A configured :class:`~geofence_watch.checker.GeofenceChecker`.
+    max_history:
+        Optional cap on stored events per object.  ``None`` means unlimited.
     """
 
     def __init__(
         self,
         checker: GeofenceChecker,
-        on_event: Optional[EventCallback] = None,
-        emit_steady_state: bool = False,
+        max_history: Optional[int] = None,
     ) -> None:
         self._checker = checker
-        self._on_event = on_event
-        self._emit_steady_state = emit_steady_state
-        # fence_name -> last known inside state (None = unknown)
-        self._state: Dict[str, Optional[bool]] = {}
+        # state[object_id][fence_name] -> bool (True = inside)
+        self._state: Dict[str, Dict[str, bool]] = {}
+        self.history: HistoryStore = HistoryStore(max_events_per_object=max_history)
 
-    def _get_state(self, fence_name: str) -> Optional[bool]:
-        return self._state.get(fence_name)
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
-    def process(self, point: Point, metadata: Optional[dict] = None) -> List[GeofenceEvent]:
-        """Process a single point and return any generated events."""
+    def _get_state(self, object_id: str, fence_name: str) -> Optional[bool]:
+        return self._state.get(object_id, {}).get(fence_name)
+
+    def _set_state(self, object_id: str, fence_name: str, inside: bool) -> None:
+        self._state.setdefault(object_id, {})[fence_name] = inside
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def process(self, object_id: str, point: Point) -> List[GeofenceEvent]:
+        """Evaluate *point* for *object_id* and return any transition events."""
         events: List[GeofenceEvent] = []
 
         for fence_name in self._checker.fence_names:
-            inside_now = self._checker.check(point, fence_name)
-            prev = self._get_state(fence_name)
+            inside_now = self._checker.check(fence_name, point)
+            was_inside = self._get_state(object_id, fence_name)\n
+            if was_inside is None:
+                # First observation — seed state without emitting an event.
+                self._set_state(object_id, fence_name, inside_now)
+                continue
 
-            if prev is None:
-                # First observation — emit steady-state event if requested
-                event_type = EventType.INSIDE if inside_now else EventType.OUTSIDE
-                if self._emit_steady_state:
-                    events.append(GeofenceEvent(fence_name, event_type, point, metadata=metadata))
-            elif inside_now and not prev:
-                events.append(GeofenceEvent(fence_name, EventType.ENTER, point, metadata=metadata))
-            elif not inside_now and prev:
-                events.append(GeofenceEvent(fence_name, EventType.EXIT, point, metadata=metadata))
-            elif self._emit_steady_state:
-                event_type = EventType.INSIDE if inside_now else EventType.OUTSIDE
-                events.append(GeofenceEvent(fence_name, event_type, point, metadata=metadata))
+            if inside_now == was_inside:
+                continue
 
-            self._state[fence_name] = inside_now
-
-        for event in events:
-            if self._on_event:
-                self._on_event(event)
+            event_type = EventType.ENTER if inside_now else EventType.EXIT
+            event = GeofenceEvent(
+                object_id=object_id,
+                fence_name=fence_name,
+                event_type=event_type,
+                point=point,
+            )
+            self._set_state(object_id, fence_name, inside_now)
+            self.history.record(event)
+            events.append(event)
 
         return events
 
-    def process_many(self, points: Iterator[Point]) -> List[GeofenceEvent]:
-        """Process an iterable of points, returning all generated events."""
-        all_events: List[GeofenceEvent] = []
+    def process_many(
+        self, object_id: str, points: List[Point]
+    ) -> Iterator[GeofenceEvent]:
+        """Yield transition events for each point in *points* sequentially."""
         for point in points:
-            all_events.extend(self.process(point))
-        return all_events
+            yield from self.process(object_id, point)
 
-    def reset_state(self) -> None:
-        """Clear all tracked fence states (useful for testing or re-runs)."""
-        self._state.clear()
+    def reset(self, object_id: Optional[str] = None) -> None:
+        """Clear state (and history) for *object_id*, or everything if *None*."""
+        if object_id is None:
+            self._state.clear()
+            # Rebuild a fresh store preserving the same cap.
+            self.history = HistoryStore(
+                max_events_per_object=self.history._max
+            )
+        else:
+            self._state.pop(object_id, None)
+            self.history.clear(object_id)
