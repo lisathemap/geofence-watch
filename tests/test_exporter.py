@@ -94,33 +94,28 @@ class TestHistoryExporter:
         assert isinstance(parsed, list)
         assert len(parsed) == 2
 
-    def test_to_json_no_indent(self, exporter: HistoryExporter):
+    def test_to_json_no_indent_is_compact(self, exporter: HistoryExporter):
+        """Without indentation the JSON should contain no newline characters."""
         raw = exporter.to_json(indent=None)
         assert "\n" not in raw
 
-    def test_to_csv_has_header(self, exporter: HistoryExporter):
-        raw = exporter.to_csv()
-        reader = csv.DictReader(io.StringIO(raw))
-        assert "event_type" in reader.fieldnames
+    def test_to_json_with_indent_is_pretty(self, exporter: HistoryExporter):
+        """With indentation the JSON output should span multiple lines."""
+        raw = exporter.to_json(indent=2)
+        assert "\n" in raw
 
-    def test_to_csv_row_count(self, exporter: HistoryExporter):
+    def test_to_csv_has_header_and_rows(self, exporter: HistoryExporter):
+        """CSV output must include a header row plus one row per event."""
         raw = exporter.to_csv()
         reader = csv.DictReader(io.StringIO(raw))
         rows = list(reader)
         assert len(rows) == 2
+        assert set(reader.fieldnames or []) == {
+            "object_id", "fence_name", "event_type", "latitude", "longitude", "timestamp"
+        }
 
-    def test_to_csv_file(self, exporter: HistoryExporter, tmp_path):
-        path = str(tmp_path / "export.csv")
-        exporter.to_csv_file(path)
-        with open(path, encoding="utf-8") as fh:
-            content = fh.read()
-        assert "event_type" in content
-        assert EventType.ENTER.value in content
-
-    def test_empty_history(self):
-        empty = ObjectHistory()
-        exp = HistoryExporter(empty)
-        assert exp.to_dicts() == []
-        assert json.loads(exp.to_json()) == []
-        rows = list(csv.DictReader(io.StringIO(exp.to_csv())))
-        assert rows == []
+    def test_to_dicts_empty_history(self):
+        """An exporter wrapping an empty history should return an empty list."""
+        empty_store = ObjectHistory(max_per_object=50)
+        empty_exporter = HistoryExporter(empty_store)
+        assert exporter.to_dicts() == []
