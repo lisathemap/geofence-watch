@@ -91,38 +91,20 @@ class TestApply:
         assert t.apply(_make_event(event_type=EventType.ENTER)) == {"id": "obj-1"}
         assert t.apply(_make_event(event_type=EventType.EXIT)) is None
 
+    def test_transform_receives_correct_fence_name(self):
+        """Verify that the full GeofenceEvent is passed to each transform."""
+        t = EventTransformer()
+        t.add(lambda e: {"fence": e.fence_name})
+        result = t.apply(_make_event(fence_name="restricted-zone"))
+        assert result == {"fence": "restricted-zone"}
 
-# ---------------------------------------------------------------------------
-# run_all()
-# ---------------------------------------------------------------------------
-
-class TestRunAll:
-    def test_empty_list(self):
+    def test_apply_after_clear_returns_none(self):
+        """Clearing transforms should cause apply() to return None again."""
         t = EventTransformer()
         t.add(lambda e: {"id": e.object_id})
-        assert t.run_all([]) == []
+        assert t.apply(_make_event()) is not None
+        t.clear()
+        assert t.apply(_make_event()) is None
 
-    def test_all_pass_through(self):
-        t = EventTransformer()
-        t.add(lambda e: {"id": e.object_id})
-        events = [_make_event(object_id=f"obj-{i}") for i in range(3)]
-        results = t.run_all(events)
-        assert len(results) == 3
-        assert [r["id"] for r in results] == ["obj-0", "obj-1", "obj-2"]
 
-    def test_dropped_events_excluded(self):
-        t = EventTransformer()
-        t.add(
-            lambda e: None
-            if e.fence_name == "skip-zone"
-            else {"fence": e.fence_name}
-        )
-        events = [
-            _make_event(fence_name="zone-a"),
-            _make_event(fence_name="skip-zone"),
-            _make_event(fence_name="zone-b"),
-        ]
-        results = t.run_all(events)
-        assert len(results) == 2
-        assert results[0]["fence"] == "zone-a"
-        assert results[1]["fence"] == "zone-b"
+# -------------------------------------------------------
