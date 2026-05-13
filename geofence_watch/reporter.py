@@ -70,3 +70,11 @@ class ActivityReporter:
                 if s.fence_name == fence_name and s.is_inside:
                     result.append(oid)
         return result
+
+    def fence_names(self) -> List[str]:
+        """Return a sorted list of all unique fence names seen across all objects."""
+        names: set[str] = set()
+        for summaries in self.all_summaries().values():
+            for s in summaries:
+                names.add(s.fence_name)
+        return sorted(names)
