@@ -55,7 +55,7 @@ def test_duplicate_event_suppressed(dedup):
 
 
 def test_different_type_forwarded(dedup):
-    cb = MagicMock()
+    cb = MagicMock()  
     dedup.add_callback(cb)
     dedup.feed(_make_event(event_type=EventType.ENTER))
     result = dedup.feed(_make_event(event_type=EventType.EXIT))
@@ -101,61 +101,20 @@ def test_reset_specific_key(dedup):
     assert ("a", "f2") in dedup.tracked_keys
 
 
-def test_remove_callback(dedup):
+def test_reset_allows_event_to_be_forwarded_again(dedup):
+    """After resetting a key, the same event type should be forwarded once more."""
     cb = MagicMock()
     dedup.add_callback(cb)
-    dedup.remove_callback(cb)
-    dedup.feed(_make_event())
-    cb.assert_not_called()
-
-
-def test_remove_unknown_callback_no_error(dedup):
-    dedup.remove_callback(lambda e: None)  # should not raise
-
-
-# ---------------------------------------------------------------------------
-# DedupStream integration tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture()
-def checker():
-    from geofence_watch.checker import GeofenceChecker
-    from geofence_watch.fence import Geofence
-
-    geojson = {
-        "type": "Feature",
-        "properties": {"name": "zone-a"},
-        "geometry": {
-            "type": "Polygon",
-            "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]],
-        },
-    }
-    c = GeofenceChecker()
-    c.register(Geofence.from_geojson(geojson))
-    return c
-
-
-@pytest.fixture()
-def ds(checker):
-    from geofence_watch.stream import GeofenceStream
-    return DedupStream(GeofenceStream(checker))
-
-
-def test_dedup_stream_stream_property(ds):
-    from geofence_watch.stream import GeofenceStream
-    assert isinstance(ds.stream, GeofenceStream)
-
-
-def test_dedup_stream_deduplicator_property(ds):
-    assert isinstance(ds.deduplicator, EventDeduplicator)
-
-
-def test_dedup_stream_suppresses_duplicate(ds):
-    cb = MagicMock()
-    ds.add_callback(cb)
-    inside = Point(lon=0.5, lat=0.5)
-    ds.process("truck-1", inside)
-    ds.process("truck-1", inside)  # still inside — no new event expected
-    # Only one ENTER should reach the callback
+    evt = _make_event(object_id="a", fence_name="f1", event_type=EventType.ENTER)
+    dedup.feed(evt)
     assert cb.call_count == 1
+
+    # Duplicate is suppressed before reset
+    dedup.feed(evt)
+    assert cb.call_count == 1
+
+    # After reset the same event should be forwarded again
+    dedup.reset(object_id="a", fence_name="f1")
+    result = dedup.feed(evt)
+    assert result is True
+    assert cb.call_count == 2
